@@ -1865,12 +1865,12 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
   }
 
   let lastError = null;
-  let filterAfterTimestamp = pollOverrides.filterAfterTimestamp ?? getVerificationPollPayload(step, state).filterAfterTimestamp;
+  const filterAfterTimestamp = pollOverrides.filterAfterTimestamp ?? getVerificationPollPayload(step, state).filterAfterTimestamp;
   const maxRounds = pollOverrides.maxRounds || VERIFICATION_POLL_MAX_ROUNDS;
 
   for (let round = 1; round <= maxRounds; round++) {
     if (round > 1) {
-      filterAfterTimestamp = await requestVerificationCodeResend(step);
+      await requestVerificationCodeResend(step);
     }
 
     const payload = getVerificationPollPayload(step, state, {
@@ -1947,13 +1947,13 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
     rejectedCodes.add(state[stateKey]);
   }
 
-  let nextFilterAfterTimestamp = options.filterAfterTimestamp ?? null;
+  const nextFilterAfterTimestamp = options.filterAfterTimestamp ?? null;
   const requestFreshCodeFirst = Boolean(options.requestFreshCodeFirst);
   const maxSubmitAttempts = 3;
 
   if (requestFreshCodeFirst) {
     try {
-      nextFilterAfterTimestamp = await requestVerificationCodeResend(step);
+      await requestVerificationCodeResend(step);
       await addLog(`步骤 ${step}：已先请求一封新的${getVerificationCodeLabel(step)}验证码，再开始轮询邮箱。`, 'warn');
     } catch (err) {
       await addLog(`步骤 ${step}：首次重新获取验证码失败：${err.message}，将继续使用当前时间窗口轮询。`, 'warn');
@@ -1977,7 +1977,7 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
         throw new Error(`步骤 ${step}：验证码连续失败，已达到 ${maxSubmitAttempts} 次重试上限。`);
       }
 
-      nextFilterAfterTimestamp = await requestVerificationCodeResend(step);
+      await requestVerificationCodeResend(step);
       await addLog(`步骤 ${step}：提交失败后已请求新验证码（${attempt + 1}/${maxSubmitAttempts}）...`, 'warn');
       continue;
     }
