@@ -228,10 +228,14 @@ function openActionModal({ title, message, actions }) {
   });
 }
 
-function openAutoStartChoiceDialog(startStep) {
+function openAutoStartChoiceDialog(startStep, options = {}) {
+  const runningStep = Number.isInteger(options.runningStep) ? options.runningStep : null;
+  const continueMessage = runningStep
+    ? `继续当前会先等待步骤 ${runningStep} 完成，再按最新进度自动执行。`
+    : `继续当前会从步骤 ${startStep} 开始自动执行。`;
   return openActionModal({
     title: '启动自动',
-    message: `检测到当前已有流程进度。继续当前会从步骤 ${startStep} 开始自动执行，重新开始会清空当前流程进度并从步骤 1 新开一轮。`,
+    message: `检测到当前已有流程进度。${continueMessage}重新开始会清空当前流程进度并从步骤 1 新开一轮。`,
     actions: [
       { id: null, label: '取消', variant: 'btn-ghost' },
       { id: 'restart', label: '重新开始', variant: 'btn-outline' },
@@ -270,6 +274,14 @@ function getFirstUnfinishedStep(state = latestState) {
   return null;
 }
 
+function getRunningSteps(state = latestState) {
+  const statuses = getStepStatuses(state);
+  return Object.entries(statuses)
+    .filter(([, status]) => status === 'running')
+    .map(([step]) => Number(step))
+    .sort((a, b) => a - b);
+}
+
 function hasSavedProgress(state = latestState) {
   const statuses = getStepStatuses(state);
   return Object.values(statuses).some((status) => status !== 'pending');
@@ -296,7 +308,7 @@ function syncAutoRunState(source = {}) {
   const autoRunning = source.autoRunning !== undefined
     ? Boolean(source.autoRunning)
     : (source.autoRunPhase !== undefined || source.phase !== undefined
-      ? ['scheduled', 'running', 'waiting_email', 'retrying'].includes(phase)
+      ? ['scheduled', 'running', 'waiting_step', 'waiting_email', 'retrying'].includes(phase)
       : currentAutoRun.autoRunning);
 
   currentAutoRun = {
@@ -310,11 +322,15 @@ function syncAutoRunState(source = {}) {
 }
 
 function isAutoRunLockedPhase() {
-  return currentAutoRun.phase === 'running' || currentAutoRun.phase === 'retrying';
+  return currentAutoRun.phase === 'running' || currentAutoRun.phase === 'waiting_step' || currentAutoRun.phase === 'retrying';
 }
 
 function isAutoRunPausedPhase() {
   return currentAutoRun.phase === 'waiting_email';
+}
+
+function isAutoRunWaitingStepPhase() {
+  return currentAutoRun.phase === 'waiting_step';
 }
 
 function isAutoRunScheduledPhase() {
@@ -614,6 +630,10 @@ function applyAutoRunStatus(payload = currentAutoRun) {
     case 'scheduled':
       autoContinueBar.style.display = 'none';
       btnAutoRun.innerHTML = `已计划${runLabel}`;
+      break;
+    case 'waiting_step':
+      autoContinueBar.style.display = 'none';
+      btnAutoRun.innerHTML = `等待中${runLabel}`;
       break;
     case 'waiting_email':
       autoContinueBar.style.display = 'flex';
@@ -1192,6 +1212,15 @@ function updateStatusDisplay(state) {
     return;
   }
 
+  if (isAutoRunWaitingStepPhase()) {
+    const runningSteps = getRunningSteps(state);
+    displayStatus.textContent = runningSteps.length
+      ? `自动等待步骤 ${runningSteps.join(', ')} 完成后继续${getAutoRunLabel()}`
+      : `自动正在按最新进度准备继续${getAutoRunLabel()}`;
+    statusBar.classList.add('running');
+    return;
+  }
+
   const running = Object.entries(state.stepStatuses).find(([, s]) => s === 'running');
   if (running) {
     displayStatus.textContent = `步骤 ${running[0]} 运行中...`;
@@ -1765,7 +1794,8 @@ btnAutoRun.addEventListener('click', async () => {
 
     if (shouldOfferAutoModeChoice()) {
       const startStep = getFirstUnfinishedStep();
-      const choice = await openAutoStartChoiceDialog(startStep);
+      const runningStep = getRunningSteps()[0] ?? null;
+      const choice = await openAutoStartChoiceDialog(startStep, { runningStep });
       if (!choice) {
         return;
       }
@@ -2137,7 +2167,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'AUTO_RUN_STATUS': {
       syncLatestState({
-        autoRunning: ['scheduled', 'running', 'waiting_email', 'retrying'].includes(message.payload.phase),
+        autoRunning: ['scheduled', 'running', 'waiting_step', 'waiting_email', 'retrying'].includes(message.payload.phase),
         autoRunPhase: message.payload.phase,
         autoRunCurrentRun: message.payload.currentRun,
         autoRunTotalRuns: message.payload.totalRuns,

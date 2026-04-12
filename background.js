@@ -1894,6 +1894,13 @@ function clearStopRequest() {
   stopRequested = false;
 }
 
+function getRunningSteps(statuses = {}) {
+  return Object.entries({ ...DEFAULT_STATE.stepStatuses, ...statuses })
+    .filter(([, status]) => status === 'running')
+    .map(([step]) => Number(step))
+    .sort((a, b) => a - b);
+}
+
 function getAutoRunStatusPayload(phase, payload = {}) {
   const currentRun = payload.currentRun ?? autoRunCurrentRun;
   const totalRuns = payload.totalRuns ?? autoRunTotalRuns;
@@ -1902,7 +1909,7 @@ function getAutoRunStatusPayload(phase, payload = {}) {
     ? (payload.scheduledAt ?? payload.scheduledAutoRunAt ?? null)
     : null;
   const scheduledAt = rawScheduledAt === null ? null : Number(rawScheduledAt);
-  const autoRunning = phase === 'scheduled' || phase === 'running' || phase === 'waiting_email' || phase === 'retrying';
+  const autoRunning = phase === 'scheduled' || phase === 'running' || phase === 'waiting_step' || phase === 'waiting_email' || phase === 'retrying';
 
   return {
     autoRunning,
@@ -1937,7 +1944,7 @@ async function broadcastAutoRunStatus(phase, payload = {}, extraState = {}) {
 }
 
 function isAutoRunLockedState(state) {
-  return Boolean(state.autoRunning) && (state.autoRunPhase === 'running' || state.autoRunPhase === 'retrying');
+  return Boolean(state.autoRunning) && (state.autoRunPhase === 'running' || state.autoRunPhase === 'waiting_step' || state.autoRunPhase === 'retrying');
 }
 
 function isAutoRunPausedState(state) {
@@ -2707,11 +2714,29 @@ async function completeStepFromBackground(step, payload = {}) {
   notifyStepComplete(step, payload);
 }
 
+async function waitForRunningStepsToFinish(payload = {}) {
+  let currentState = await getState();
+  let runningSteps = getRunningSteps(currentState.stepStatuses);
+  if (!runningSteps.length) {
+    return currentState;
+  }
+
+  await addLog(`自动继续：检测到步骤 ${runningSteps.join(', ')} 正在运行，等待完成后再继续自动流程...`, 'info');
+  await broadcastAutoRunStatus('waiting_step', payload);
+
+  while (runningSteps.length) {
+    await sleepWithStop(250);
+    currentState = await getState();
+    runningSteps = getRunningSteps(currentState.stepStatuses);
+  }
+
+  await addLog('自动继续：当前运行步骤已结束，准备按最新进度继续自动流程...', 'info');
+  return currentState;
+}
+
 async function markRunningStepsStopped() {
   const state = await getState();
-  const runningSteps = Object.entries(state.stepStatuses || {})
-    .filter(([, status]) => status === 'running')
-    .map(([step]) => Number(step));
+  const runningSteps = getRunningSteps(state.stepStatuses);
 
   for (const step of runningSteps) {
     await setStepStatus(step, 'stopped');
@@ -3102,10 +3127,14 @@ async function autoRunLoop(totalRuns, options = {}) {
   let attemptRuns = Math.max(0, resumeAttemptRunsProcessed);
   let forceFreshTabsNextRun = false;
   let continueCurrentOnFirstAttempt = initialMode === 'continue';
+  const initialState = await getState();
+  const initialPhase = continueCurrentOnFirstAttempt && getRunningSteps(initialState.stepStatuses).length
+    ? 'waiting_step'
+    : 'running';
 
   await setState({
     autoRunSkipFailures,
-    ...getAutoRunStatusPayload('running', {
+    ...getAutoRunStatusPayload(initialPhase, {
       currentRun: resumeCurrentRun,
       totalRuns,
       attemptRun: resumeAttemptRunsProcessed,
@@ -3121,7 +3150,14 @@ async function autoRunLoop(totalRuns, options = {}) {
     let useExistingProgress = false;
 
     if (continueCurrentOnFirstAttempt) {
-      const currentState = await getState();
+      let currentState = await getState();
+      if (getRunningSteps(currentState.stepStatuses).length) {
+        currentState = await waitForRunningStepsToFinish({
+          currentRun: targetRun,
+          totalRuns,
+          attemptRun: attemptRuns,
+        });
+      }
       const resumeStep = getFirstUnfinishedStep(currentState.stepStatuses);
       if (resumeStep && hasSavedProgress(currentState.stepStatuses)) {
         startStep = resumeStep;
