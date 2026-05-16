@@ -58,6 +58,8 @@ importScripts(
   'cloudflare-temp-email-utils.js',
   'cloudmail-utils.js',
   'background/cloudmail-provider.js',
+  'yyds-mail-utils.js',
+  'background/yyds-mail-provider.js',
   'icloud-utils.js',
   'mail-provider-utils.js',
   'content/activation-utils.js'
@@ -262,6 +264,19 @@ const {
   normalizeCloudMailMailApiMessages,
 } = self.CloudMailUtils;
 const {
+  DEFAULT_YYDS_MAIL_BASE_URL,
+  YYDS_MAIL_PROVIDER,
+  buildYydsMailHeaders,
+  joinYydsMailUrl,
+  normalizeYydsMailAddress,
+  normalizeYydsMailApiKey,
+  normalizeYydsMailBaseUrl,
+  normalizeYydsMailCurrentInbox,
+  normalizeYydsMailInbox,
+  normalizeYydsMailMessageDetail,
+  normalizeYydsMailMessages,
+} = self.YydsMailUtils;
+const {
   findIcloudAliasByEmail,
   getConfiguredIcloudHostPreference,
   getIcloudHostHintFromMessage,
@@ -405,6 +420,7 @@ const CLOUDFLARE_TEMP_EMAIL_PROVIDER = 'cloudflare-temp-email';
 const CLOUDFLARE_TEMP_EMAIL_GENERATOR = 'cloudflare-temp-email';
 const CLOUD_MAIL_PROVIDER = 'cloudmail';
 const CLOUD_MAIL_GENERATOR = 'cloudmail';
+const YYDS_MAIL_GENERATOR = YYDS_MAIL_PROVIDER;
 const CUSTOM_EMAIL_POOL_GENERATOR = 'custom-pool';
 const HOTMAIL_MAILBOXES = ['INBOX', 'Junk'];
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
@@ -1003,6 +1019,8 @@ const PERSISTED_SETTING_DEFAULTS = {
   cloudMailReceiveMailbox: '',
   cloudMailDomain: '',
   cloudMailDomains: [],
+  yydsMailApiKey: '',
+  yydsMailBaseUrl: DEFAULT_YYDS_MAIL_BASE_URL,
   hotmailAccounts: [],
   mail2925Accounts: [],
   paypalAccounts: [],
@@ -1139,6 +1157,7 @@ const DEFAULT_STATE = {
   luckmailPreserveTagName: DEFAULT_LUCKMAIL_PRESERVE_TAG_NAME,
   currentLuckmailPurchase: null,
   currentLuckmailMailCursor: null,
+  currentYydsMailInbox: null,
   currentPhoneActivation: null,
   phoneNumber: '',
   currentPhoneVerificationCode: '',
@@ -2114,6 +2133,9 @@ function normalizeEmailGenerator(value = '') {
   const gmailAliasGenerator = typeof GMAIL_ALIAS_GENERATOR === 'string'
     ? GMAIL_ALIAS_GENERATOR
     : 'gmail-alias';
+  const yydsMailGenerator = typeof YYDS_MAIL_GENERATOR === 'string'
+    ? YYDS_MAIL_GENERATOR
+    : 'yyds-mail';
   if (normalized === 'custom' || normalized === 'manual') {
     return 'custom';
   }
@@ -2129,6 +2151,7 @@ function normalizeEmailGenerator(value = '') {
   if (normalized === 'cloudflare') return 'cloudflare';
   if (normalized === CLOUDFLARE_TEMP_EMAIL_GENERATOR) return CLOUDFLARE_TEMP_EMAIL_GENERATOR;
   if (normalized === 'cloudmail') return 'cloudmail';
+  if (normalized === yydsMailGenerator) return yydsMailGenerator;
   return 'duck';
 }
 
@@ -2303,6 +2326,15 @@ async function markCurrentRegistrationAccountUsed(state = {}, options = {}) {
     }
   }
 
+  if (typeof isYydsMailProvider === 'function' && isYydsMailProvider(latestState)) {
+    const currentInbox = normalizeYydsMailCurrentInbox(latestState.currentYydsMailInbox);
+    if (currentInbox?.address) {
+      await clearYydsMailRuntimeState({ clearEmail: true });
+      await addLog(`${reasonPrefix}：YYDS Mail 邮箱 ${currentInbox.address} 运行态已清空。`, options.level || 'warn');
+      updated = true;
+    }
+  }
+
   if (String(latestState.mailProvider || '').trim().toLowerCase() === '2925' && latestState.currentMail2925AccountId) {
     await patchMail2925Account(latestState.currentMail2925AccountId, {
       lastUsedAt: Date.now(),
@@ -2355,6 +2387,9 @@ function normalizePanelMode(value = '') {
 
 function normalizeMailProvider(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
   switch (normalized) {
     case 'custom':
     case ICLOUD_PROVIDER:
@@ -2363,6 +2398,7 @@ function normalizeMailProvider(value = '') {
     case LUCKMAIL_PROVIDER:
     case CLOUDFLARE_TEMP_EMAIL_PROVIDER:
     case CLOUD_MAIL_PROVIDER:
+    case yydsMailProvider:
     case '163':
     case '163-vip':
     case '126':
@@ -2600,6 +2636,32 @@ const {
   pollCloudMailVerificationCode,
   resolveCloudMailPollTargetEmail,
 } = cloudMailProvider;
+const yydsMailProvider = self.MultiPageBackgroundYydsMailProvider.createYydsMailProvider({
+  addLog,
+  buildYydsMailHeaders,
+  DEFAULT_YYDS_MAIL_BASE_URL,
+  getState,
+  joinYydsMailUrl,
+  normalizeYydsMailAddress,
+  normalizeYydsMailApiKey,
+  normalizeYydsMailBaseUrl,
+  normalizeYydsMailCurrentInbox,
+  normalizeYydsMailInbox,
+  normalizeYydsMailMessageDetail,
+  normalizeYydsMailMessages,
+  persistRegistrationEmailState,
+  pickVerificationMessageWithTimeFallback,
+  setEmailState,
+  setState,
+  sleepWithStop,
+  throwIfStopped,
+  YYDS_MAIL_PROVIDER,
+});
+const {
+  clearYydsMailRuntimeState,
+  fetchYydsMailAddress,
+  pollYydsMailVerificationCode,
+} = yydsMailProvider;
 
 function normalizeSub2ApiGroupNames(value = '') {
   const source = Array.isArray(value)
@@ -2964,6 +3026,10 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeCloudMailDomain(value);
     case 'cloudMailDomains':
       return normalizeCloudMailDomains(value);
+    case 'yydsMailApiKey':
+      return normalizeYydsMailApiKey(value);
+    case 'yydsMailBaseUrl':
+      return normalizeYydsMailBaseUrl(value);
     case 'hotmailAccounts':
       return normalizeHotmailAccounts(value);
     case 'mail2925Accounts':
@@ -3814,6 +3880,8 @@ async function resetState() {
       'luckmailUsedPurchases',
       'luckmailPreserveTagId',
       'luckmailPreserveTagName',
+      'yydsMailApiKey',
+      'yydsMailBaseUrl',
       'preferredIcloudHost',
       'automationWindowId',
       ...CONTRIBUTION_RUNTIME_KEYS,
@@ -3879,6 +3947,9 @@ async function resetState() {
     luckmailPreserveTagName: String(prev.luckmailPreserveTagName || '').trim() || DEFAULT_LUCKMAIL_PRESERVE_TAG_NAME,
     currentLuckmailPurchase: null,
     currentLuckmailMailCursor: null,
+    yydsMailApiKey: normalizeYydsMailApiKey(prev.yydsMailApiKey ?? persistedSettings.yydsMailApiKey),
+    yydsMailBaseUrl: normalizeYydsMailBaseUrl(prev.yydsMailBaseUrl ?? persistedSettings.yydsMailBaseUrl),
+    currentYydsMailInbox: null,
     // Keep reusable phone activation across round resets so the same number can be reactivated up to maxUses.
     reusablePhoneActivation,
     // Keep free reuse phone activation until the user clears or the flow retires it.
@@ -4012,6 +4083,16 @@ function isLuckmailProvider(stateOrProvider) {
     ? stateOrProvider
     : stateOrProvider?.mailProvider;
   return provider === LUCKMAIL_PROVIDER;
+}
+
+function isYydsMailProvider(stateOrProvider) {
+  const provider = typeof stateOrProvider === 'string'
+    ? stateOrProvider
+    : stateOrProvider?.mailProvider;
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
+  return provider === yydsMailProvider;
 }
 
 function isCustomMailProvider(stateOrProvider) {
@@ -10545,6 +10626,9 @@ function getEmailGeneratorLabel(generator) {
   const gmailAliasGenerator = typeof GMAIL_ALIAS_GENERATOR === 'string'
     ? GMAIL_ALIAS_GENERATOR
     : 'gmail-alias';
+  const yydsMailGenerator = typeof YYDS_MAIL_GENERATOR === 'string'
+    ? YYDS_MAIL_GENERATOR
+    : 'yyds-mail';
   if (generator === 'custom') {
     return '自定义邮箱';
   }
@@ -10560,6 +10644,7 @@ function getEmailGeneratorLabel(generator) {
   if (generator === 'cloudflare') return 'Cloudflare 邮箱';
   if (generator === CLOUDFLARE_TEMP_EMAIL_GENERATOR) return 'Cloudflare Temp Email';
   if (generator === CLOUD_MAIL_GENERATOR) return 'Cloud Mail';
+  if (generator === yydsMailGenerator) return 'YYDS Mail';
   return 'Duck 邮箱';
 }
 const mail2925SessionManager = self.MultiPageBackgroundMail2925Session?.createMail2925SessionManager({
@@ -10736,7 +10821,20 @@ async function fetchDuckEmail(options = {}) {
 
 async function fetchGeneratedEmail(state, options = {}) {
   const currentState = state || await getState();
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
+  const yydsMailGenerator = typeof YYDS_MAIL_GENERATOR === 'string'
+    ? YYDS_MAIL_GENERATOR
+    : 'yyds-mail';
+  const requestedMailProvider = normalizeMailProvider(options.mailProvider ?? currentState.mailProvider);
+  if (requestedMailProvider === yydsMailProvider) {
+    return fetchYydsMailAddress(currentState, options);
+  }
   const generator = normalizeEmailGenerator(options.generator ?? currentState.emailGenerator);
+  if (generator === yydsMailGenerator) {
+    return fetchYydsMailAddress(currentState, options);
+  }
   if (generator === CLOUD_MAIL_GENERATOR) {
     return fetchCloudMailAddress(currentState, options);
   }
@@ -11294,6 +11392,12 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
     return purchase.email_address;
   }
 
+  if (isYydsMailProvider(currentState)) {
+    const email = await fetchYydsMailAddress(currentState, { generateNew: true });
+    await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：YYDS Mail 邮箱已就绪：${email}（第 ${attemptRuns} 次尝试）===`, 'ok');
+    return email;
+  }
+
   if (isGeneratedAliasProvider(currentState)) {
     if (currentState.mailProvider === GMAIL_PROVIDER) {
       if (!currentState.emailPrefix) {
@@ -11423,6 +11527,12 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
     const purchase = await ensureLuckmailPurchaseForFlow({ allowReuse: true });
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：LuckMail 邮箱已就绪：${purchase.email_address}（第 ${attemptRuns} 次尝试）===`, 'ok');
     return purchase.email_address;
+  }
+
+  if (isYydsMailProvider(currentState)) {
+    const email = await fetchYydsMailAddress(currentState, { generateNew: true });
+    await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：YYDS Mail 邮箱已就绪：${email}（第 ${attemptRuns} 次尝试）===`, 'ok');
+    return email;
   }
 
   if (isGeneratedAliasProvider(currentState)) {
@@ -12168,12 +12278,14 @@ const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.create
   isRetryableContentScriptTransportError,
   isStopError,
   LUCKMAIL_PROVIDER,
+  YYDS_MAIL_PROVIDER,
   MAIL_2925_VERIFICATION_INTERVAL_MS,
   MAIL_2925_VERIFICATION_MAX_ATTEMPTS,
   pollCloudflareTempEmailVerificationCode,
   pollCloudMailVerificationCode,
   pollHotmailVerificationCode,
   pollLuckmailVerificationCode,
+  pollYydsMailVerificationCode,
   sendToContentScript,
   sendToContentScriptResilient,
   sendToMailContentScriptResilient,
@@ -12565,6 +12677,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   clearAutoRunTimerAlarm,
   clearFreeReusablePhoneActivation,
   clearLuckmailRuntimeState,
+  clearYydsMailRuntimeState,
   clearStopRequest,
   closeLocalhostCallbackTabs,
   closeTabsByUrlPrefix,
@@ -12621,6 +12734,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   isHotmailProvider,
   isLocalhostOAuthCallbackUrl,
   isLuckmailProvider,
+  isYydsMailProvider,
   isStopError,
   isTabAlive,
   launchAutoRunTimerPlan,
@@ -12833,6 +12947,9 @@ async function executeStep3(state) {
 
 function getMailConfig(state) {
   const provider = state.mailProvider || 'qq';
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
   if (provider === 'custom') {
     return { provider: 'custom', label: '自定义邮箱' };
   }
@@ -12880,6 +12997,9 @@ function getMailConfig(state) {
   }
   if (provider === 'cloudmail') {
     return { provider: 'cloudmail', label: 'Cloud Mail' };
+  }
+  if (provider === yydsMailProvider) {
+    return { provider: yydsMailProvider, label: 'YYDS Mail' };
   }
   if (provider === '163') {
     return { source: 'mail-163', url: 'https://mail.163.com/js6/main.jsp?df=mail163_letter#module=mbox.ListModule%7C%7B%22fid%22%3A1%2C%22order%22%3A%22date%22%2C%22desc%22%3Atrue%7D', label: '163 邮箱' };

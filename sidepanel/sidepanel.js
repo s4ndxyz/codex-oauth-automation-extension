@@ -274,6 +274,9 @@ const inputCloudMailAdminEmail = document.getElementById('input-cloud-mail-admin
 const inputCloudMailAdminPassword = document.getElementById('input-cloud-mail-admin-password');
 const inputCloudMailReceiveMailbox = document.getElementById('input-cloud-mail-receive-mailbox');
 const inputCloudMailDomain = document.getElementById('input-cloud-mail-domain');
+const yydsMailSection = document.getElementById('yyds-mail-section');
+const inputYydsMailApiKey = document.getElementById('input-yyds-mail-api-key');
+const inputYydsMailBaseUrl = document.getElementById('input-yyds-mail-base-url');
 const hotmailSection = document.getElementById('hotmail-section');
 const mail2925Section = document.getElementById('mail2925-section');
 const luckmailSection = document.getElementById('luckmail-section');
@@ -971,9 +974,11 @@ const ICLOUD_PROVIDER = 'icloud';
 const GMAIL_PROVIDER = 'gmail';
 const GMAIL_ALIAS_GENERATOR = 'gmail-alias';
 const LUCKMAIL_PROVIDER = 'luckmail-api';
+const YYDS_MAIL_PROVIDER = 'yyds-mail';
 const CUSTOM_EMAIL_POOL_GENERATOR = 'custom-pool';
 const DEFAULT_LUCKMAIL_BASE_URL = 'https://mails.luckyous.com';
 const DEFAULT_LUCKMAIL_EMAIL_TYPE = 'ms_graph';
+const DEFAULT_YYDS_MAIL_BASE_URL = window.YydsMailUtils?.DEFAULT_YYDS_MAIL_BASE_URL || 'https://maliapi.215.im/v1';
 const DISPLAY_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL = 'http://127.0.0.1:17373';
 const CONTRIBUTION_UPLOAD_URL = 'https://flowpilot.qlhazycoder.top/';
@@ -1209,6 +1214,17 @@ function setManagedAliasBaseEmailInputForProvider(provider = selectMailProvider.
 function getCurrentRegistrationEmailUiCopy() {
   if (isCustomMailProvider()) {
     return getCustomMailProviderUiCopy();
+  }
+  const useYydsMail = typeof isYydsMailProvider === 'function'
+    ? isYydsMailProvider()
+    : String(selectMailProvider.value || '').trim().toLowerCase() === 'yyds-mail';
+  if (useYydsMail) {
+    return {
+      buttonLabel: '获取',
+      placeholder: '点击获取 YYDS Mail 邮箱，或手动粘贴邮箱',
+      successVerb: '获取',
+      label: 'YYDS Mail',
+    };
   }
   if (usesGeneratedAliasMailProvider()) {
     return getManagedAliasProviderUiCopy();
@@ -1553,6 +1569,11 @@ const MAIL_PROVIDER_LOGIN_CONFIGS = {
     label: 'Cloudflare Temp Email 部署',
     url: 'https://github.com/QLHazyCoder/cloudflare_temp_email',
     buttonLabel: '部署',
+  },
+  [YYDS_MAIL_PROVIDER]: {
+    label: 'YYDS Mail',
+    url: 'https://vip.215.im/docs',
+    buttonLabel: '文档',
   },
   '2925': {
     label: '2925 邮箱',
@@ -2860,8 +2881,12 @@ function restoreCustomEmailPoolEntriesFromState(state = {}) {
 }
 
 function usesCustomEmailPoolGenerator(provider = selectMailProvider.value) {
+  const providerUsesYydsMail = typeof isYydsMailProvider === 'function'
+    ? isYydsMailProvider(provider)
+    : String(provider || '').trim().toLowerCase() === 'yyds-mail';
   return !isCustomMailProvider(provider)
     && !isLuckmailProvider(provider)
+    && !providerUsesYydsMail
     && getSelectedEmailGenerator() === CUSTOM_EMAIL_POOL_GENERATOR;
 }
 
@@ -3207,10 +3232,25 @@ function applyCloudMailSettingsState(state = {}) {
   }
 }
 
+function applyYydsMailSettingsState(state = {}) {
+  const normalizeYydsBaseUrlValue = typeof normalizeYydsMailBaseUrl === 'function'
+    ? normalizeYydsMailBaseUrl
+    : ((value) => String(value || '').trim() || 'https://maliapi.215.im/v1');
+  if (inputYydsMailApiKey) {
+    inputYydsMailApiKey.value = state?.yydsMailApiKey || '';
+  }
+  if (inputYydsMailBaseUrl) {
+    inputYydsMailBaseUrl.value = normalizeYydsBaseUrlValue(state?.yydsMailBaseUrl);
+  }
+}
+
 function collectSettingsPayload() {
   const defaultGpcHelperApiUrl = typeof DEFAULT_GPC_HELPER_API_URL !== 'undefined'
     ? DEFAULT_GPC_HELPER_API_URL
     : 'https://gpc.qlhazycoder.top';
+  const normalizeYydsBaseUrlValue = typeof normalizeYydsMailBaseUrl === 'function'
+    ? normalizeYydsMailBaseUrl
+    : ((value) => String(value || '').trim() || 'https://maliapi.215.im/v1');
   const { domains, activeDomain } = getCloudflareDomainsFromState();
   const selectedCloudflareDomain = normalizeCloudflareDomainValue(
     !cloudflareDomainEditMode ? selectCfDomain.value : activeDomain
@@ -3981,6 +4021,8 @@ function collectSettingsPayload() {
     cloudMailAdminPassword: (typeof inputCloudMailAdminPassword !== 'undefined' && inputCloudMailAdminPassword) ? inputCloudMailAdminPassword.value : '',
     cloudMailReceiveMailbox: normalizeCloudMailReceiveMailboxInput((typeof inputCloudMailReceiveMailbox !== 'undefined' && inputCloudMailReceiveMailbox) ? inputCloudMailReceiveMailbox.value : ''),
     cloudMailDomain: normalizeCloudMailDomainInput((typeof inputCloudMailDomain !== 'undefined' && inputCloudMailDomain) ? inputCloudMailDomain.value : ''),
+    yydsMailApiKey: (typeof inputYydsMailApiKey !== 'undefined' && inputYydsMailApiKey) ? inputYydsMailApiKey.value.trim() : '',
+    yydsMailBaseUrl: normalizeYydsBaseUrlValue((typeof inputYydsMailBaseUrl !== 'undefined' && inputYydsMailBaseUrl) ? inputYydsMailBaseUrl.value : ''),
     autoRunSkipFailures: inputAutoSkipFailures.checked,
     autoRunFallbackThreadIntervalMinutes: normalizeAutoRunThreadIntervalMinutes(inputAutoSkipFailuresThreadIntervalMinutes.value),
     step6CookieCleanupEnabled: typeof inputStep6CookieCleanupEnabled !== 'undefined' && inputStep6CookieCleanupEnabled
@@ -9359,8 +9401,11 @@ function applySettingsState(state) {
   }
   inputCodex2ApiUrl.value = state?.codex2apiUrl || '';
   inputCodex2ApiAdminKey.value = state?.codex2apiAdminKey || '';
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
   const restoredMailProvider = isCustomMailProvider(state?.mailProvider)
-    || [ICLOUD_PROVIDER, 'hotmail-api', GMAIL_PROVIDER, 'luckmail-api', '163', '163-vip', '126', 'qq', 'inbucket', '2925', 'cloudflare-temp-email', 'cloudmail'].includes(String(state?.mailProvider || '').trim())
+    || [ICLOUD_PROVIDER, 'hotmail-api', GMAIL_PROVIDER, 'luckmail-api', yydsMailProvider, '163', '163-vip', '126', 'qq', 'inbucket', '2925', 'cloudflare-temp-email', 'cloudmail'].includes(String(state?.mailProvider || '').trim())
     ? String(state?.mailProvider || '163').trim()
     : (String(state?.emailGenerator || '').trim().toLowerCase() === 'custom'
       || String(state?.emailGenerator || '').trim().toLowerCase() === 'manual'
@@ -9441,6 +9486,9 @@ function applySettingsState(state) {
   applyCloudflareTempEmailSettingsState(state);
   if (typeof applyCloudMailSettingsState === 'function') {
     applyCloudMailSettingsState(state);
+  }
+  if (typeof applyYydsMailSettingsState === 'function') {
+    applyYydsMailSettingsState(state);
   }
   renderCloudflareDomainOptions(state?.cloudflareDomain || '');
   setCloudflareDomainEditMode(false, { clearInput: true });
@@ -10157,6 +10205,13 @@ function isLuckmailProvider(provider = selectMailProvider.value) {
   return String(provider || '').trim().toLowerCase() === LUCKMAIL_PROVIDER;
 }
 
+function isYydsMailProvider(provider = selectMailProvider.value) {
+  const yydsMailProvider = typeof YYDS_MAIL_PROVIDER === 'string'
+    ? YYDS_MAIL_PROVIDER
+    : 'yyds-mail';
+  return String(provider || '').trim().toLowerCase() === yydsMailProvider;
+}
+
 function isIcloudMailProvider(provider = selectMailProvider.value) {
   return String(provider || '').trim().toLowerCase() === ICLOUD_PROVIDER;
 }
@@ -10186,6 +10241,29 @@ function normalizeLuckmailEmailType(value = '') {
   return ['self_built', 'ms_imap', 'ms_graph', 'google_variant'].includes(normalized)
     ? normalized
     : DEFAULT_LUCKMAIL_EMAIL_TYPE;
+}
+
+function normalizeYydsMailBaseUrl(value = '') {
+  if (window.YydsMailUtils?.normalizeYydsMailBaseUrl) {
+    return window.YydsMailUtils.normalizeYydsMailBaseUrl(value);
+  }
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return DEFAULT_YYDS_MAIL_BASE_URL;
+  }
+  const candidate = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return DEFAULT_YYDS_MAIL_BASE_URL;
+    }
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
+    return `${parsed.origin}${parsed.pathname}` || DEFAULT_YYDS_MAIL_BASE_URL;
+  } catch {
+    return DEFAULT_YYDS_MAIL_BASE_URL;
+  }
 }
 
 function getSelectedEmailGenerator() {
@@ -10678,10 +10756,13 @@ function updateMailProviderUI() {
   const useInbucket = selectMailProvider.value === 'inbucket';
   const useHotmail = selectMailProvider.value === 'hotmail-api';
   const useLuckmail = canShowLuckmail && isLuckmailProvider();
+  const useYydsMail = typeof isYydsMailProvider === 'function'
+    ? isYydsMailProvider()
+    : String(selectMailProvider.value || '').trim().toLowerCase() === 'yyds-mail';
   const useCustomEmail = isCustomMailProvider();
   const useCustomMailProviderPool = useCustomEmail && usesCustomMailProviderPool(selectMailProvider.value);
   const useIcloudProvider = isIcloudMailProvider();
-  const useEmailGenerator = !useHotmail && !useLuckmail && !useCustomEmail && (!useGeneratedAlias || useGmail);
+  const useEmailGenerator = !useHotmail && !useLuckmail && !useYydsMail && !useCustomEmail && (!useGeneratedAlias || useGmail);
   const useCloudflareTempEmailProvider = selectMailProvider.value === 'cloudflare-temp-email';
   const useCloudMailProvider = selectMailProvider.value === 'cloudmail';
   const aliasUiCopy = useGeneratedAlias
@@ -10751,6 +10832,9 @@ function updateMailProviderUI() {
   if (typeof cloudMailSection !== 'undefined' && cloudMailSection) {
     cloudMailSection.style.display = showCloudMailSettings ? '' : 'none';
   }
+  if (typeof yydsMailSection !== 'undefined' && yydsMailSection) {
+    yydsMailSection.style.display = useYydsMail ? '' : 'none';
+  }
   if (typeof rowCloudMailBaseUrl !== 'undefined' && rowCloudMailBaseUrl) rowCloudMailBaseUrl.style.display = showCloudMailSettings ? '' : 'none';
   if (typeof rowCloudMailAdminEmail !== 'undefined' && rowCloudMailAdminEmail) rowCloudMailAdminEmail.style.display = showCloudMailSettings ? '' : 'none';
   if (typeof rowCloudMailAdminPassword !== 'undefined' && rowCloudMailAdminPassword) rowCloudMailAdminPassword.style.display = showCloudMailSettings ? '' : 'none';
@@ -10818,7 +10902,7 @@ function updateMailProviderUI() {
   }
   inputEmailPrefix.style.display = '';
   inputEmailPrefix.readOnly = false;
-  selectEmailGenerator.disabled = useHotmail || useLuckmail || useCustomEmail || (useGeneratedAlias && !useGmail);
+  selectEmailGenerator.disabled = useHotmail || useLuckmail || useYydsMail || useCustomEmail || (useGeneratedAlias && !useGmail);
   if (useGmail) {
     labelEmailPrefix.textContent = 'Gmail 原邮箱';
     inputEmailPrefix.placeholder = '例如 yourname@gmail.com';
@@ -12936,6 +13020,16 @@ inputVpsPassword.addEventListener('blur', () => {
 });
 
 [inputLuckmailApiKey, inputLuckmailBaseUrl, inputLuckmailDomain].forEach((input) => {
+  input?.addEventListener('input', () => {
+    markSettingsDirty(true);
+    scheduleSettingsAutoSave();
+  });
+  input?.addEventListener('blur', () => {
+    saveSettings({ silent: true }).catch(() => { });
+  });
+});
+
+[inputYydsMailApiKey, inputYydsMailBaseUrl].forEach((input) => {
   input?.addEventListener('input', () => {
     markSettingsDirty(true);
     scheduleSettingsAutoSave();
