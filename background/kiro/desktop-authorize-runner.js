@@ -271,7 +271,7 @@
       return result;
     }
 
-    function waitForResolved(expectedState = '', timeoutMs = 120000) {
+    function waitForResolved(expectedState = '', timeoutMs = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
       const stateKey = cleanString(expectedState);
       const immediate = consumeResolved(stateKey);
       if (immediate) {
@@ -289,7 +289,7 @@
             pendingSessions.set(stateKey, nextSession);
           }
           reject(new Error('等待桌面授权回调超时。'));
-        }, Math.max(1000, Math.floor(Number(timeoutMs) || 120000)));
+        }, Math.max(1000, Math.floor(Number(timeoutMs) || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS)));
         session.waiters.push({
           resolve: (result) => {
             clearTimeout(timer);
@@ -414,6 +414,52 @@
       }));
     }
 
+    function isMissingTabError(error) {
+      return /No tab with id/i.test(getErrorMessage(error));
+    }
+
+    async function finalizeDesktopAuthorizeCallback(currentState = {}, runtimeState = {}, resolvedCallback = {}, nodeId = '') {
+      if (resolvedCallback?.error) {
+        throw new Error(`桌面授权回调失败：${resolvedCallback.error}`);
+      }
+
+      const authorizationCode = cleanString(resolvedCallback?.code);
+      if (!authorizationCode) {
+        throw new Error('桌面授权回调缺少 authorization code。');
+      }
+
+      const tokenResult = await desktopClientApi.exchangeDesktopAuthorizationCode({
+        region: runtimeState.desktopAuth?.region || DEFAULT_REGION,
+        clientId: runtimeState.desktopAuth?.clientId,
+        clientSecret: runtimeState.desktopAuth?.clientSecret,
+        redirectUri: runtimeState.desktopAuth?.redirectUri,
+        code: authorizationCode,
+        codeVerifier: runtimeState.desktopAuth?.codeVerifier,
+      }, fetchImpl);
+      const payload = await applyRuntimeState(currentState, {
+        session: {
+          currentStage: 'upload',
+          pageState: 'callback_captured',
+          pageUrl: resolvedCallback.url,
+          lastError: '',
+        },
+        desktopAuth: {
+          authorizationCode,
+          accessToken: tokenResult.accessToken,
+          refreshToken: tokenResult.refreshToken,
+          status: 'authorized',
+          authorizedAt: Date.now(),
+        },
+        upload: {
+          status: 'ready_to_upload',
+          error: '',
+        },
+      });
+      await log('步骤 8：桌面授权回调已捕获，Token 换取成功。', 'ok', nodeId);
+      await completeNodeFromBackground(nodeId, payload);
+      return payload;
+    }
+
     async function ensureDesktopAuthorizeTab(state = {}, options = {}) {
       const runtimeState = readKiroRuntime(state);
       let tabId = Number.isInteger(runtimeState.session?.desktopTabId)
@@ -534,6 +580,7 @@
     }
 
     async function executeDesktopAction(tabId, action, payload = {}, options = {}) {
+      const timeoutBudget = resolveTimeoutBudget(options);
       const result = await sendToContentScriptResilient(KIRO_DESKTOP_SOURCE_ID, {
         type: 'EXECUTE_KIRO_DESKTOP_AUTHORIZE_ACTION',
         step: options.step || 0,
@@ -543,9 +590,12 @@
           ...payload,
         },
       }, {
-        timeoutMs: 30000,
+        timeoutMs: timeoutBudget.getRemainingMs(1000),
         retryDelayMs: 700,
-        onRetryableError: buildDesktopRetryRecovery(tabId, options),
+        onRetryableError: buildDesktopRetryRecovery(tabId, {
+          ...options,
+          timeoutBudget,
+        }),
         logMessage: options.logMessage || '正在执行 Kiro 桌面授权动作...',
       });
       if (result?.error) {
@@ -816,7 +866,7 @@
 
     async function executeKiroCompleteDesktopAuthorize(state = {}) {
       const nodeId = String(state?.nodeId || 'kiro-complete-desktop-authorize').trim();
-      const currentState = await getExecutionState(state);
+      let currentState = await getExecutionState(state);
       let runtimeState = readKiroRuntime(currentState);
       const desktopState = cleanString(runtimeState.desktopAuth?.state);
       try {
@@ -839,71 +889,105 @@
           tabId: runtimeState.session?.desktopTabId,
         });
 
-        const deadline = Date.now() + 120000;
+        const timeoutBudget = createTimeoutBudget(DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS);
+        const deadline = Date.now() + timeoutBudget.totalTimeoutMs;
+        let awaitingCallbackAfterConsent = false;
+        const updateLoopState = async (patch = {}) => {
+          const runtimePatch = mergeRuntimePatch(currentState, patch);
+          await setState(runtimePatch);
+          currentState = {
+            ...currentState,
+            ...runtimePatch,
+          };
+          runtimeState = readKiroRuntime(currentState);
+          return runtimePatch;
+        };
+
         while (Date.now() < deadline) {
           throwIfStopped();
 
           const resolvedCallback = callbackTracker.consumeResolved(desktopState);
           if (resolvedCallback) {
-            if (resolvedCallback.error) {
-              throw new Error(`桌面授权回调失败：${resolvedCallback.error}`);
-            }
-            const tokenResult = await desktopClientApi.exchangeDesktopAuthorizationCode({
-              region: runtimeState.desktopAuth.region || DEFAULT_REGION,
-              clientId: runtimeState.desktopAuth.clientId,
-              clientSecret: runtimeState.desktopAuth.clientSecret,
-              redirectUri: runtimeState.desktopAuth.redirectUri,
-              code: resolvedCallback.code,
-              codeVerifier: runtimeState.desktopAuth.codeVerifier,
-            }, fetchImpl);
-            const payload = await applyRuntimeState(currentState, {
-              session: {
-                currentStage: 'upload',
-                pageState: 'callback_captured',
-                pageUrl: resolvedCallback.url,
-                lastError: '',
-              },
-              desktopAuth: {
-                authorizationCode: resolvedCallback.code,
-                accessToken: tokenResult.accessToken,
-                refreshToken: tokenResult.refreshToken,
-                status: 'authorized',
-                authorizedAt: Date.now(),
-              },
-              upload: {
-                status: 'ready_to_upload',
-                error: '',
-              },
-            });
-            await log('步骤 8：桌面授权回调已捕获，Token 换取成功。', 'ok', nodeId);
-            await completeNodeFromBackground(nodeId, payload);
+            await finalizeDesktopAuthorizeCallback(currentState, runtimeState, resolvedCallback, nodeId);
             return;
           }
 
-          const tabId = await activateDesktopAuthorizeTab(currentState, {
-            missingUrlMessage: '缺少桌面授权地址，请先执行步骤 7。',
-            openFailedMessage: '无法恢复桌面授权页，请重新执行步骤 7。',
-          });
+          if (awaitingCallbackAfterConsent) {
+            const waitedCallback = await callbackTracker.waitForResolved(
+              desktopState,
+              Math.min(timeoutBudget.getRemainingMs(1000), 1500)
+            ).catch(() => null);
+            if (waitedCallback) {
+              await finalizeDesktopAuthorizeCallback(currentState, runtimeState, waitedCallback, nodeId);
+              return;
+            }
+          }
 
-          const pageState = await getDesktopAuthorizePageState(tabId, {
-            step: 8,
-            injectLogMessage: '步骤 8：Kiro 桌面授权页内容脚本未就绪，正在等待页面恢复...',
-            readyLogMessage: '步骤 8：正在读取 Kiro 桌面授权页当前状态...',
-          });
+          let tabId = null;
+          if (awaitingCallbackAfterConsent) {
+            tabId = await getTabId(KIRO_DESKTOP_SOURCE_ID).catch(() => null);
+            if (!Number.isInteger(tabId)) {
+              await sleepWithStop(1000);
+              continue;
+            }
 
-          await setState(mergeRuntimePatch(currentState, {
+            const trackedTab = await chrome?.tabs?.get?.(tabId).catch(() => null);
+            if (!trackedTab) {
+              await sleepWithStop(1000);
+              continue;
+            }
+
+            const trackedCallback = parseDesktopCallbackUrl(
+              trackedTab.url,
+              desktopState,
+              runtimeState.desktopAuth?.redirectPort
+            );
+            if (trackedCallback) {
+              await finalizeDesktopAuthorizeCallback(currentState, runtimeState, trackedCallback, nodeId);
+              return;
+            }
+
+            if (String(trackedTab.status || '') !== 'complete') {
+              await sleepWithStop(1000);
+              continue;
+            }
+          } else {
+            tabId = await activateDesktopAuthorizeTab(currentState, {
+              missingUrlMessage: '缺少桌面授权地址，请先执行步骤 7。',
+              openFailedMessage: '无法恢复桌面授权页，请重新执行步骤 7。',
+            });
+          }
+
+          let pageState = null;
+          try {
+            pageState = await getDesktopAuthorizePageState(tabId, {
+              step: 8,
+              timeoutBudget,
+              injectLogMessage: '步骤 8：Kiro 桌面授权页内容脚本未就绪，正在等待页面恢复...',
+              readyLogMessage: '步骤 8：正在读取 Kiro 桌面授权页当前状态...',
+            });
+          } catch (error) {
+            if (awaitingCallbackAfterConsent && isMissingTabError(error)) {
+              await sleepWithStop(1000);
+              continue;
+            }
+            throw error;
+          }
+
+          await updateLoopState({
             session: {
               pageState: pageState?.state || '',
               pageUrl: pageState?.url || '',
               lastError: '',
             },
-          }));
+          });
 
           if (pageState.state === 'relogin_email') {
             const email = cleanString(runtimeState.register?.email || currentState?.email);
             await log(`步骤 8：桌面授权页要求重新输入邮箱，正在填写 ${email}...`, 'info', nodeId);
             await executeDesktopAction(tabId, 'submit-email', { email }, {
               step: 8,
+              timeoutBudget,
               logMessage: '步骤 8：正在向桌面授权页提交邮箱...',
             });
             await sleepWithStop(1200);
@@ -915,6 +999,7 @@
             await log('步骤 8：桌面授权页要求重新输入密码，正在填写密码...', 'info', nodeId);
             await executeDesktopAction(tabId, 'submit-password', { password }, {
               step: 8,
+              timeoutBudget,
               logMessage: '步骤 8：正在向桌面授权页提交密码...',
             });
             await sleepWithStop(1200);
@@ -922,14 +1007,13 @@
           }
 
           if (pageState.state === 'otp_page') {
-            runtimeState = readKiroRuntime(currentState);
             if (!runtimeState.desktopAuth?.otpRequestedAt) {
-              await setState(mergeRuntimePatch(currentState, {
+              await updateLoopState({
                 desktopAuth: {
                   otpRequestedAt: Date.now(),
                   status: 'waiting_otp',
                 },
-              }));
+              });
             }
             const codeResult = await pollDesktopOtpCode(8, currentState, nodeId);
             const code = cleanString(codeResult?.code);
@@ -939,6 +1023,7 @@
             await log(`步骤 8：已获取桌面授权验证码 ${code}，正在提交...`, 'info', nodeId);
             await executeDesktopAction(tabId, 'submit-otp', { code }, {
               step: 8,
+              timeoutBudget,
               logMessage: '步骤 8：正在向桌面授权页提交验证码...',
             });
             await sleepWithStop(1200);
@@ -949,8 +1034,10 @@
             await log('步骤 8：正在确认 Kiro 桌面授权访问...', 'info', nodeId);
             await executeDesktopAction(tabId, 'confirm-consent', {}, {
               step: 8,
+              timeoutBudget,
               logMessage: '步骤 8：正在确认桌面授权访问...',
             });
+            awaitingCallbackAfterConsent = true;
             await sleepWithStop(1200);
             continue;
           }
@@ -958,59 +1045,20 @@
           if (pageState.state === 'callback_page') {
             const parsedCallback = parseDesktopCallbackUrl(pageState.url, desktopState, runtimeState.desktopAuth?.redirectPort);
             if (parsedCallback) {
-              callbackTracker.registerPending({
-                expectedState: desktopState,
-                redirectPort: runtimeState.desktopAuth?.redirectPort,
-                tabId,
-              });
-              if (parsedCallback.code) {
-                await setState(mergeRuntimePatch(currentState, {
-                  session: {
-                    pageState: 'callback_page',
-                    pageUrl: parsedCallback.url,
-                  },
-                }));
-              }
+              await finalizeDesktopAuthorizeCallback(currentState, runtimeState, parsedCallback, nodeId);
+              return;
             }
           }
 
           await sleepWithStop(1000);
         }
 
-        const lastResult = await callbackTracker.waitForResolved(desktopState, 2000).catch(() => null);
-        if (lastResult?.error) {
-          throw new Error(`桌面授权回调失败：${lastResult.error}`);
-        }
-        if (lastResult?.code) {
-          const tokenResult = await desktopClientApi.exchangeDesktopAuthorizationCode({
-            region: runtimeState.desktopAuth.region || DEFAULT_REGION,
-            clientId: runtimeState.desktopAuth.clientId,
-            clientSecret: runtimeState.desktopAuth.clientSecret,
-            redirectUri: runtimeState.desktopAuth.redirectUri,
-            code: lastResult.code,
-            codeVerifier: runtimeState.desktopAuth.codeVerifier,
-          }, fetchImpl);
-          const payload = await applyRuntimeState(currentState, {
-            session: {
-              currentStage: 'upload',
-              pageState: 'callback_captured',
-              pageUrl: lastResult.url,
-              lastError: '',
-            },
-            desktopAuth: {
-              authorizationCode: lastResult.code,
-              accessToken: tokenResult.accessToken,
-              refreshToken: tokenResult.refreshToken,
-              status: 'authorized',
-              authorizedAt: Date.now(),
-            },
-            upload: {
-              status: 'ready_to_upload',
-              error: '',
-            },
-          });
-          await log('步骤 8：桌面授权回调已捕获，Token 换取成功。', 'ok', nodeId);
-          await completeNodeFromBackground(nodeId, payload);
+        const lastResult = await callbackTracker.waitForResolved(
+          desktopState,
+          Math.min(timeoutBudget.getRemainingMs(1000), 2000)
+        ).catch(() => null);
+        if (lastResult) {
+          await finalizeDesktopAuthorizeCallback(currentState, runtimeState, lastResult, nodeId);
           return;
         }
 
