@@ -284,13 +284,6 @@
       await addLog(message, level, nodeId ? { nodeId } : {});
     }
 
-    async function getExecutionState(state = {}) {
-      if (state && typeof state === 'object' && !Array.isArray(state) && Object.keys(state).length) {
-        return state;
-      }
-      return getState();
-    }
-
     async function applyRuntimeState(currentState = {}, patch = {}) {
       const nextPatch = mergeRuntimePatch(currentState, patch);
       await setState(nextPatch);
@@ -313,7 +306,7 @@
 
     async function executeKiroUploadCredential(state = {}) {
       const nodeId = String(state?.nodeId || 'kiro-upload-credential').trim();
-      const currentState = await getExecutionState(state);
+      const currentState = await getState();
       try {
         const targetId = resolveKiroTargetId(currentState);
         const targetConfig = resolveKiroTargetConfig(currentState, targetId);

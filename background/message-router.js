@@ -1430,21 +1430,21 @@
             || phoneSignupReloginAfterBindEmailChanged;
           const oauthFlowTimeoutDisabled = Object.prototype.hasOwnProperty.call(updates, 'oauthFlowTimeoutEnabled')
             && updates.oauthFlowTimeoutEnabled === false;
-          await setPersistentSettings(updates);
+          const canonicalSettingsUpdates = await setPersistentSettings(updates);
           const stateUpdates = {
-            ...updates,
+            ...canonicalSettingsUpdates,
             ...sessionUpdates,
             ...(oauthFlowTimeoutDisabled ? {
               oauthFlowDeadlineAt: null,
               oauthFlowDeadlineSourceUrl: null,
             } : {}),
           };
-          if (Object.prototype.hasOwnProperty.call(updates, 'activeFlowId')
+          if (Object.prototype.hasOwnProperty.call(canonicalSettingsUpdates, 'activeFlowId')
             && !Object.prototype.hasOwnProperty.call(stateUpdates, 'flowId')) {
-            stateUpdates.flowId = updates.activeFlowId;
+            stateUpdates.flowId = canonicalSettingsUpdates.activeFlowId;
           }
-          if (Object.prototype.hasOwnProperty.call(updates, 'icloudHostPreference')) {
-            const nextHostPreference = String(updates.icloudHostPreference || '').trim().toLowerCase();
+          if (Object.prototype.hasOwnProperty.call(canonicalSettingsUpdates, 'icloudHostPreference')) {
+            const nextHostPreference = String(canonicalSettingsUpdates.icloudHostPreference || '').trim().toLowerCase();
             stateUpdates.preferredIcloudHost = nextHostPreference === 'icloud.com' || nextHostPreference === 'icloud.com.cn'
               ? nextHostPreference
               : '';

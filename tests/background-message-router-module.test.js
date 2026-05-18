@@ -120,7 +120,7 @@ test('SAVE_SETTING broadcasts free phone reuse setting updates for realtime side
     },
     broadcastDataUpdate: (payload) => broadcasts.push(payload),
     getState: async () => ({ ...state }),
-    setPersistentSettings: async () => {},
+    setPersistentSettings: async (updates) => ({ ...updates }),
     setState: async (updates) => {
       state = { ...state, ...updates };
     },
@@ -181,6 +181,7 @@ test('SAVE_SETTING preserves phone reuse preferences while phone signup is selec
     getState: async () => ({ ...state }),
     setPersistentSettings: async (updates) => {
       persistedPayloads.push({ ...updates });
+      return { ...updates };
     },
     setState: async (updates) => {
       state = { ...state, ...updates };
@@ -239,7 +240,7 @@ test('SAVE_SETTING allows phone reuse preferences after switching back to email 
     }),
     broadcastDataUpdate: () => {},
     getState: async () => ({ ...state }),
-    setPersistentSettings: async () => {},
+    setPersistentSettings: async (updates) => ({ ...updates }),
     setState: async (updates) => {
       state = { ...state, ...updates };
     },
@@ -280,7 +281,7 @@ test('SAVE_SETTING broadcasts operation delay setting without background success
       : {},
     broadcastDataUpdate: (payload) => broadcasts.push(payload),
     getState: async () => ({ ...state }),
-    setPersistentSettings: async () => {},
+    setPersistentSettings: async (updates) => ({ ...updates }),
     setState: async (updates) => { state = { ...state, ...updates }; },
   });
 
@@ -311,7 +312,7 @@ test('SAVE_SETTING mirrors activeFlowId into flowId when switching to kiro flow'
       : {},
     broadcastDataUpdate: (payload) => broadcasts.push(payload),
     getState: async () => ({ ...state }),
-    setPersistentSettings: async () => {},
+    setPersistentSettings: async (updates) => ({ ...updates }),
     setState: async (updates) => { state = { ...state, ...updates }; },
   });
 
@@ -329,6 +330,123 @@ test('SAVE_SETTING mirrors activeFlowId into flowId when switching to kiro flow'
     flowId: 'kiro',
     signupMethod: 'email',
   });
+});
+
+test('SAVE_SETTING syncs canonical kiro settingsState back into session state', async () => {
+  const source = fs.readFileSync('background/message-router.js', 'utf8');
+  const globalScope = { console };
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundMessageRouter;`)(globalScope);
+  const canonicalSettingsState = {
+    schemaVersion: 4,
+    activeFlowId: 'kiro',
+    services: {
+      account: { customPassword: '' },
+      email: { provider: 'duck' },
+      proxy: { enabled: false, provider: '711proxy', mode: 'account' },
+    },
+    flows: {
+      openai: {
+        integrationTargetId: 'cpa',
+        integrationTargets: {
+          cpa: { vpsUrl: '', vpsPassword: '', localCpaStep9Mode: 'submit' },
+          sub2api: {
+            sub2apiUrl: '',
+            sub2apiEmail: '',
+            sub2apiPassword: '',
+            sub2apiGroupName: 'codex',
+            sub2apiGroupNames: ['codex', 'openai-plus'],
+            sub2apiAccountPriority: 1,
+            sub2apiDefaultProxyName: '',
+          },
+          codex2api: { codex2apiUrl: '', codex2apiAdminKey: '' },
+        },
+        signup: {
+          signupMethod: 'email',
+          phoneVerificationEnabled: false,
+          phoneSignupReloginAfterBindEmailEnabled: false,
+        },
+        plus: {
+          plusModeEnabled: false,
+          plusPaymentMethod: 'paypal',
+        },
+        autoRun: {
+          stepExecutionRange: { enabled: false, fromStep: 1, toStep: 11 },
+        },
+      },
+      kiro: {
+        targetId: 'kiro-rs',
+        targets: {
+          'kiro-rs': {
+            baseUrl: 'https://kiro.example.com/admin',
+            apiKey: 'live-key',
+          },
+        },
+        autoRun: {
+          stepExecutionRange: { enabled: false, fromStep: 1, toStep: 9 },
+        },
+      },
+    },
+  };
+  let state = {
+    activeFlowId: 'kiro',
+    flowId: 'kiro',
+    kiroTargetId: 'kiro-rs',
+    kiroRsUrl: 'https://kiro.example.com/admin',
+    kiroRsKey: '',
+    settingsSchemaVersion: 4,
+    settingsState: {
+      ...canonicalSettingsState,
+      flows: {
+        ...canonicalSettingsState.flows,
+        kiro: {
+          ...canonicalSettingsState.flows.kiro,
+          targets: {
+            'kiro-rs': {
+              baseUrl: 'https://kiro.example.com/admin',
+              apiKey: '',
+            },
+          },
+        },
+      },
+    },
+    plusModeEnabled: false,
+    plusPaymentMethod: 'paypal',
+  };
+
+  const router = api.createMessageRouter({
+    addLog: async () => {},
+    buildLuckmailSessionSettingsPayload: () => ({}),
+    buildPersistentSettingsPayload: (input = {}) => ({
+      activeFlowId: String(input.activeFlowId || 'kiro'),
+      kiroRsKey: String(input.kiroRsKey || ''),
+    }),
+    broadcastDataUpdate: () => {},
+    getState: async () => ({ ...state }),
+    setPersistentSettings: async () => ({
+      activeFlowId: 'kiro',
+      flowId: 'kiro',
+      kiroTargetId: 'kiro-rs',
+      kiroRsUrl: 'https://kiro.example.com/admin',
+      kiroRsKey: 'live-key',
+      settingsSchemaVersion: 4,
+      settingsState: canonicalSettingsState,
+    }),
+    setState: async (updates) => {
+      state = { ...state, ...updates };
+    },
+  });
+
+  const response = await router.handleMessage({
+    type: 'SAVE_SETTING',
+    payload: {
+      activeFlowId: 'kiro',
+      kiroRsKey: 'live-key',
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(state.kiroRsKey, 'live-key');
+  assert.equal(state.settingsState.flows.kiro.targets['kiro-rs'].apiKey, 'live-key');
 });
 
 test('AUTO_RUN applies current flow selection from payload before starting loop', async () => {
@@ -435,7 +553,7 @@ test('SAVE_SETTING re-resolves signup method when panel mode changes', async () 
     broadcastDataUpdate: () => {},
     getState: async () => ({ ...state }),
     resolveSignupMethod: (nextState = {}) => nextState.panelMode === 'cpa' ? 'email' : 'phone',
-    setPersistentSettings: async () => {},
+    setPersistentSettings: async (updates) => ({ ...updates }),
     setState: async (updates) => {
       state = { ...state, ...updates };
     },
@@ -479,6 +597,7 @@ test('SAVE_SETTING applies shared mode-switch normalization before persisting in
     ),
     setPersistentSettings: async (updates) => {
       persistedPayloads.push({ ...updates });
+      return { ...updates };
     },
     setState: async (updates) => {
       state = { ...state, ...updates };
