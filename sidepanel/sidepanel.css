@@ -657,6 +657,7 @@ header {
   display: flex;
   align-items: center;
   min-height: 34px;
+  margin-bottom: 14px;
   padding: 7px 46px;
   border: 1px solid color-mix(in srgb, var(--amber) 24%, var(--border));
   border-radius: var(--radius-sm);
@@ -683,6 +684,11 @@ header {
   letter-spacing: 0.08em;
 }
 
+.auto-run-ad-badge--end {
+  left: auto;
+  right: 10px;
+}
+
 .auto-run-ad-viewport {
   width: 100%;
   min-width: 0;
@@ -702,7 +708,8 @@ header {
   display: block;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -712,7 +719,8 @@ header {
 }
 
 .auto-run-ad-link {
-  color: color-mix(in srgb, var(--amber) 80%, var(--link));
+  color: color-mix(in srgb, var(--amber) 88%, var(--text-primary));
+  font-weight: 700;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
