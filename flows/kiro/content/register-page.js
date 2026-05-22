@@ -37,8 +37,18 @@ const KIRO_OTP_INPUT_SELECTOR = [
   'input[inputmode="numeric"]',
   'input[placeholder*="6-digit" i]',
   'input[placeholder*="6 位" i]',
+  'input[placeholder*="verification" i]',
+  'input[placeholder*="code" i]',
   'input[name*="otp" i]',
   'input[name*="code" i]',
+  'input[id*="otp" i]',
+  'input[id*="code" i]',
+  'input[data-testid*="otp" i]',
+  'input[data-testid*="code" i]',
+  'input[aria-label*="otp" i]',
+  'input[aria-label*="code" i]',
+  'input[aria-label*="verification" i]',
+  'input[aria-label*="one-time" i]',
 ].join(', ');
 
 const KIRO_PASSWORD_FIELD_SELECTOR = 'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"])';
@@ -417,16 +427,30 @@ function parseCurrentUrl() {
   }
 }
 
-function getKiroAuthPathKind() {
+function getKiroAuthRouteText() {
   const parsed = parseCurrentUrl();
-  const pathname = String(parsed?.pathname || '').toLowerCase();
-  if (/(^|\/)login(\/|$)/.test(pathname)) {
+  return [
+    parsed?.pathname || '',
+    parsed?.hash || '',
+  ].map((entry) => String(entry || '').toLowerCase()).join(' ');
+}
+
+function getKiroAuthRouteKind() {
+  const routeText = getKiroAuthRouteText();
+  if (/(^|\/)login(\/|\s|$)/.test(routeText)) {
     return 'login';
   }
-  if (/(^|\/)signup(\/|$)/.test(pathname)) {
+  if (/(^|\/)signup(\/|\s|$)/.test(routeText)) {
     return 'signup';
   }
   return '';
+}
+
+function getKiroOtpRouteState(authRouteKind = '') {
+  if (!/(^|\/)verify-otp(\/|\s|$)/.test(getKiroAuthRouteText())) {
+    return '';
+  }
+  return authRouteKind === 'login' ? 'login_otp_page' : 'register_otp_page';
 }
 
 function findBuilderIdButton() {
@@ -533,7 +557,7 @@ function getKiroFatalStateMessage(snapshot = {}) {
 function detectKiroRegisterPageState() {
   const pageText = getKiroPageText();
   const currentUrl = location.href;
-  const authPathKind = getKiroAuthPathKind();
+  const authRouteKind = getKiroAuthRouteKind();
   const pageEmail = findKiroPageAccountEmail(pageText);
   const fatalState = detectKiroFatalPageState(pageText, currentUrl, document.title || '');
   if (fatalState) {
@@ -566,7 +590,7 @@ function detectKiroRegisterPageState() {
   const passwordFields = findKiroPasswordFields();
   if (passwordFields.passwordInput) {
     const passwordInput = passwordFields.passwordInput;
-    const isLoginPasswordPage = authPathKind === 'login'
+    const isLoginPasswordPage = authRouteKind === 'login'
       || (!passwordFields.confirmPasswordInput && KIRO_SIGN_IN_TEXT_PATTERN.test(pageText));
     return {
       state: isLoginPasswordPage ? 'login_password_page' : 'create_password_page',
@@ -606,15 +630,16 @@ function detectKiroRegisterPageState() {
   }
 
   const otpInput = findVisibleOtpInput();
-  if (otpInput) {
+  const otpRouteState = getKiroOtpRouteState(authRouteKind);
+  if (otpInput || otpRouteState) {
     return {
-      state: authPathKind === 'login' ? 'login_otp_page' : 'register_otp_page',
+      state: otpRouteState || (authRouteKind === 'login' ? 'login_otp_page' : 'register_otp_page'),
       url: currentUrl,
       email: pageEmail,
       accountEmail: pageEmail,
       otpInput,
-      verifyButton: findOtpVerifyButton(otpInput),
-      resendButton: findOtpResendButton(otpInput),
+      verifyButton: otpInput ? findOtpVerifyButton(otpInput) : null,
+      resendButton: otpInput ? findOtpResendButton(otpInput) : null,
       codeInvalid: KIRO_CODE_INVALID_TEXT_PATTERN.test(pageText),
     };
   }
