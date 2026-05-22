@@ -27,7 +27,7 @@ function createRouter(overrides = {}) {
     executedSteps: [],
     accountRecords: [],
   };
-  const nodeByStep = {
+  const nodeByStep = overrides.nodeByStep || {
     1: 'open-chatgpt',
     2: 'submit-signup-email',
     3: 'fill-password',
@@ -42,6 +42,7 @@ function createRouter(overrides = {}) {
     12: 'confirm-oauth',
     13: 'platform-verify',
   };
+  const stepByNode = overrides.stepByNode || null;
   const normalStepByNode = {
     'open-chatgpt': 1,
     'submit-signup-email': 2,
@@ -67,6 +68,12 @@ function createRouter(overrides = {}) {
   };
   const getStepForNode = (nodeId) => {
     const state = normalizeState(overrides.state || {});
+    if (typeof overrides.getStepIdByNodeIdForState === 'function') {
+      return overrides.getStepIdByNodeIdForState(nodeId, state) || 0;
+    }
+    if (stepByNode && Object.prototype.hasOwnProperty.call(stepByNode, nodeId)) {
+      return stepByNode[nodeId] || 0;
+    }
     return (state.plusModeEnabled ? plusStepByNode : normalStepByNode)[nodeId] || 0;
   };
   const normalizeState = (state = {}) => {
@@ -133,8 +140,10 @@ function createRouter(overrides = {}) {
     getPendingAutoRunTimerPlan: () => null,
     getSourceLabel: () => '',
     getState: async () => normalizeState(overrides.state || { nodeStatuses: { 'fill-password': 'pending' } }),
-    getNodeIdsForState: () => ['open-chatgpt', 'submit-signup-email', 'fill-password', 'fetch-signup-code', 'fill-profile', 'wait-registration-success', 'oauth-login', 'fetch-login-code', 'confirm-oauth', 'platform-verify'],
-    getStepIdByNodeIdForState: (nodeId, state = {}) => (state.plusModeEnabled ? plusStepByNode : normalStepByNode)[nodeId] || 0,
+    getNodeIdsForState: overrides.getNodeIdsForState || (() => ['open-chatgpt', 'submit-signup-email', 'fill-password', 'fetch-signup-code', 'fill-profile', 'wait-registration-success', 'oauth-login', 'fetch-login-code', 'confirm-oauth', 'platform-verify']),
+    getStepIdByNodeIdForState: overrides.getStepIdByNodeIdForState || ((nodeId, state = {}) => (stepByNode && Object.prototype.hasOwnProperty.call(stepByNode, nodeId))
+      ? stepByNode[nodeId] || 0
+      : (state.plusModeEnabled ? plusStepByNode : normalStepByNode)[nodeId] || 0),
     getStepDefinitionForState: overrides.getStepDefinitionForState,
     getStepIdsForState: overrides.getStepIdsForState,
     getLastStepIdForState: overrides.getLastStepIdForState,
@@ -624,24 +633,75 @@ test('message router stops the flow and surfaces cloudflare security block error
   });
 });
 
-test('message router blocks manual step 4 execution when signup page tab is missing', async () => {
+test('message router delegates OpenAI manual step 4 to the OpenAI node executor', async () => {
   const { router, events } = createRouter({
     getTabId: async () => null,
     isTabAlive: async () => false,
   });
 
-  await assert.rejects(
-    () => router.handleMessage({
-      type: 'EXECUTE_NODE',
-      source: 'sidepanel',
-      nodeId: 'fetch-signup-code',
-      payload: { nodeId: 'fetch-signup-code' },
-    }, {}),
-    /手动执行步骤 4 前，请先执行步骤 1 或步骤 2/
-  );
+  await router.handleMessage({
+    type: 'EXECUTE_NODE',
+    source: 'sidepanel',
+    nodeId: 'fetch-signup-code',
+    payload: { nodeId: 'fetch-signup-code' },
+  }, {});
 
-  assert.deepStrictEqual(events.invalidations, []);
-  assert.deepStrictEqual(events.executedSteps, []);
+  assert.deepStrictEqual(events.invalidations, [
+    { step: 4, options: { logLabel: '节点 fetch-signup-code 重新执行' } },
+  ]);
+  assert.deepStrictEqual(events.executedSteps, [4]);
+});
+
+test('message router delegates Kiro manual step 4 without OpenAI auth-tab prerequisites', async () => {
+  const kiroNodeByStep = {
+    1: 'kiro-open-register-page',
+    2: 'kiro-submit-email',
+    3: 'kiro-submit-name',
+    4: 'kiro-submit-verification-code',
+    5: 'kiro-submit-password',
+    6: 'kiro-complete-register-consent',
+    7: 'kiro-start-desktop-authorize',
+    8: 'kiro-complete-desktop-authorize',
+    9: 'kiro-upload-credential',
+  };
+  const kiroStepByNode = Object.fromEntries(
+    Object.entries(kiroNodeByStep).map(([step, nodeId]) => [nodeId, Number(step)])
+  );
+  const { router, events } = createRouter({
+    state: {
+      activeFlowId: 'kiro',
+      flowId: 'kiro',
+      nodeStatuses: {
+        'kiro-open-register-page': 'completed',
+        'kiro-submit-email': 'completed',
+        'kiro-submit-name': 'completed',
+        'kiro-submit-verification-code': 'failed',
+      },
+    },
+    nodeByStep: kiroNodeByStep,
+    stepByNode: kiroStepByNode,
+    getNodeIdsForState: () => Object.values(kiroNodeByStep),
+    getTabId: async (sourceId) => {
+      assert.notEqual(sourceId, 'openai-auth');
+      return null;
+    },
+    isTabAlive: async (sourceId) => {
+      assert.notEqual(sourceId, 'openai-auth');
+      return false;
+    },
+  });
+
+  await router.handleMessage({
+    type: 'EXECUTE_NODE',
+    source: 'sidepanel',
+    nodeId: 'kiro-submit-verification-code',
+    payload: { nodeId: 'kiro-submit-verification-code' },
+  }, {});
+
+  assert.deepStrictEqual(events.invalidations, [
+    { step: 4, options: { logLabel: '节点 kiro-submit-verification-code 重新执行' } },
+  ]);
+  assert.deepStrictEqual(events.executedSteps, [4]);
 });
 
 test('message router resolves GPC OTP manual confirmation without completing step early', async () => {

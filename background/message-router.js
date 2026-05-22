@@ -288,23 +288,6 @@
       return appendAccountRunRecord(status, state, reason);
     }
 
-    async function ensureManualStepPrerequisites(step) {
-      if (step !== 4) {
-        return;
-      }
-
-      const signupTabId = typeof getTabId === 'function'
-        ? await getTabId('openai-auth')
-        : null;
-      const signupTabAlive = signupTabId && typeof isTabAlive === 'function'
-        ? await isTabAlive('openai-auth')
-        : Boolean(signupTabId);
-
-      if (!signupTabId || !signupTabAlive) {
-        throw new Error('手动执行步骤 4 前，请先执行步骤 1 或步骤 2，确保认证页仍然打开并停留在验证码页。');
-      }
-    }
-
     const DEFAULT_OPENAI_NODE_BY_STEP = Object.freeze({
       1: 'open-chatgpt',
       2: 'submit-signup-email',
@@ -1277,9 +1260,6 @@
           }
           if (typeof assertNodeExecutionAllowedForState === 'function') {
             assertNodeExecutionAllowedForState(nodeId, requestState, '手动执行节点');
-          }
-          if (message.source === 'sidepanel') {
-            await ensureManualStepPrerequisites(resolvedStep);
           }
           if (message.source === 'sidepanel') {
             await invalidateDownstreamAfterStepRestart(resolvedStep, { logLabel: `节点 ${nodeId} 重新执行` });
